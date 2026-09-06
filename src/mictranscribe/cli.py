@@ -18,7 +18,7 @@ from .config import (
     merge_cli_overrides,
     save_config,
 )
-from .devices import list_input_devices, print_devices, prompt_for_device
+from .devices import list_input_devices, print_devices, resolve_device
 from .levels import log_level_report, measure_input_level
 from .lock import SingleInstanceError, acquire_singleton_lock
 from .logging_setup import configure_logging
@@ -164,7 +164,13 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(cfg.output_dir, verbose=args.verbose)
 
     devices = list_input_devices()
-    chosen = prompt_for_device(devices, default_name=cfg.device_name)
+    chosen = resolve_device(devices, args.device, cfg.device_name)
+    if chosen is None:
+        print(f"Error: no microphone matching '{args.device}' was found. Available devices:")
+        print_devices(devices)
+        if lock is not None:
+            lock.release()
+        return
     if chosen.name != cfg.device_name:
         cfg.device_name = chosen.name
         save_config(cfg, config_file)

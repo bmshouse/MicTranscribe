@@ -15,6 +15,13 @@ from .types import Utterance
 
 logger = logging.getLogger("mictranscribe.vad")
 
+# How often to re-warn while blocked handing a finished utterance to the
+# transcription queue. Short enough to fire before frame_queue's own ~10s
+# buffer starts dropping audio, so this points at the real bottleneck
+# (transcription stalled/stuck) instead of leaving only the downstream
+# "frame queue full" symptom to investigate.
+UTTERANCE_QUEUE_WARN_INTERVAL_S = 3.0
+
 
 class _State(Enum):
     SILENCE = auto()
@@ -73,10 +80,34 @@ class UtteranceAssembler:
                 continue
             utterance = self.process_frame(frame, self._is_speech(frame), self._clock())
             if utterance is not None:
-                self.utterance_queue.put(utterance)
+                self._enqueue_utterance(utterance)
 
     def stop(self) -> None:
         self._stopped.set()
+
+    def _enqueue_utterance(self, utterance: Utterance) -> None:
+        """Hand a finished utterance to the transcription queue.
+
+        Unlike a raw audio frame, a finished utterance is real, already-
+        assembled speech — it's never dropped, just retried. But blocking
+        on a plain put() here would silently stall this thread if
+        transcription is falling behind or stuck (e.g. a GPU/driver
+        problem), and the only visible symptom would be frame_queue filling
+        up downstream with no indication of the actual cause. Retrying with
+        a timeout instead surfaces that directly, repeating for as long as
+        it's stuck so a real outage isn't just a single easy-to-miss line.
+        """
+        while not self._stopped.is_set():
+            try:
+                self.utterance_queue.put(utterance, timeout=UTTERANCE_QUEUE_WARN_INTERVAL_S)
+                return
+            except queue.Full:
+                logger.warning(
+                    "Utterance queue full for >%.0fs: transcription is falling behind or stuck "
+                    "(e.g. a GPU/driver problem). Audio frames are now being dropped upstream "
+                    "until this clears.",
+                    UTTERANCE_QUEUE_WARN_INTERVAL_S,
+                )
 
     def _is_speech(self, frame: bytes) -> bool:
         try:

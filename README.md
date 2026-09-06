@@ -47,7 +47,12 @@ pip install -e ".[gpu]"
 ```
 
 `--whisper-device` defaults to `auto` (GPU if available, CPU otherwise), so
-this is safe to skip — the same install works either way.
+this is safe to skip — the same install works either way. On startup, a log
+line reports which one was actually used, e.g. `Whisper inference will run
+on: CUDA (requested: auto)` — if a GPU was requested/expected but it fell
+back to CPU (a broken driver, a kernel update that outran the Nvidia DKMS
+module, etc.), that specific line is logged as a `WARNING` instead of
+`INFO` so it isn't missed.
 
 ## Usage
 
@@ -67,6 +72,19 @@ Logs go to `<output-dir>/mictranscribe.log`. Config persists to a
 platform config directory (e.g. `~/.config/mictranscribe/config.toml` on
 Linux) — your mic choice is remembered automatically; other settings can be
 edited there directly or passed as flags each run.
+
+**`--device NAME`** matches against the exact names `--list-devices`
+prints (e.g. `hassio_mic`), by substring — not PulseAudio source names
+(the longer `alsa_input.usb-...`-style strings used by `--pulse-source`).
+Those are a different, unrelated identifier system for a different layer
+of the audio stack. Passing it skips the interactive picker entirely — it
+either resolves and starts immediately, or fails with a clear error
+(`no microphone matching '<name>' was found`) rather than falling back to a
+prompt, which matters for running unattended (a systemd service, cron, no
+TTY at all) where there'd be no one to answer it. In most cases you don't
+need `--device` at all for normal manual use — after picking a mic once via
+the interactive picker, it's saved as the default and pressing Enter
+accepts it on every later run.
 
 ## Choosing a model
 
@@ -93,7 +111,7 @@ switch to a model you haven't used before.
 
 | Flag | Meaning | Default |
 |---|---|---|
-| `--device NAME` | Microphone to use (substring match) | last selected, else prompts |
+| `--device NAME` | Microphone to use (substring match); skips the picker, errors clearly if unmatched | unset: prompts, using last selected as default |
 | `--model-size` | Whisper model, see table above | `large-v3-turbo` |
 | `--whisper-device` | Inference backend: `auto`/`cpu`/`cuda` | `auto` |
 | `--compute-type` | `default`/`int8`/`int8_float16`/`float16` | `default` |

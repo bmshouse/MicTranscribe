@@ -134,6 +134,21 @@ def assemble_transcript(
     return " ".join(segment.text.strip() for segment in kept).strip()
 
 
+def resolved_device_log_level(requested_device: str, resolved_device: str) -> int:
+    """`device="auto"` (the default) silently falls back to CPU with no
+    error if no usable GPU is found — that's the right behavior, but it's
+    also exactly what made a real GPU/driver outage hard to notice (see
+    incident: hours of dropped audio traced back to a broken Nvidia driver,
+    discovered only by manually inspecting the loaded model afterward).
+    WARNING when GPU was requested/allowed but we landed on CPU anyway;
+    INFO otherwise (including cpu-requested-cpu-resolved, the expected
+    case).
+    """
+    if requested_device != "cpu" and resolved_device == "cpu":
+        return logging.WARNING
+    return logging.INFO
+
+
 class TranscriptionWorker:
     """Pulls assembled utterances off a queue and transcribes them one at a
     time with a local Whisper model. A failure transcribing a single
@@ -161,6 +176,18 @@ class TranscriptionWorker:
         self._stopped = threading.Event()
         logger.info("Loading Whisper model '%s' (device=%s, compute_type=%s)", model_size, device, compute_type)
         self._model = WhisperModel(model_size, device=device, compute_type=compute_type)
+
+        try:
+            resolved_device = self._model.model.device
+        except AttributeError:
+            resolved_device = device  # introspection unavailable; report what was requested
+        level = resolved_device_log_level(device, resolved_device)
+        suffix = (
+            " — no usable GPU was found; check `nvidia-smi`/drivers if you expected GPU acceleration"
+            if level == logging.WARNING
+            else ""
+        )
+        logger.log(level, "Whisper inference will run on: %s (requested: %s)%s", resolved_device.upper(), device, suffix)
 
     def run(self) -> None:
         while not self._stopped.is_set():
