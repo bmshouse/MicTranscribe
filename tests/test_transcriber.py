@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 
-from mictranscribe.transcriber import assemble_transcript, forced_language, segment_passes_quality_filter
+from mictranscribe.transcriber import (
+    assemble_transcript,
+    forced_language,
+    resolved_device_log_level,
+    segment_passes_quality_filter,
+)
 
 
 def _segment(text="hello", no_speech_prob=0.1, avg_logprob=-0.3, compression_ratio=1.5):
@@ -83,3 +89,14 @@ def test_assemble_transcript_empty_when_no_segments_survive():
     segments = [_segment(no_speech_prob=0.99)]
     text = assemble_transcript(segments, _info("en"), (), 0.6, -1.0, 2.4)
     assert text == ""
+
+
+def test_resolved_device_warns_on_unexpected_cpu_fallback():
+    assert resolved_device_log_level("auto", "cpu") == logging.WARNING
+    assert resolved_device_log_level("cuda", "cpu") == logging.WARNING
+
+
+def test_resolved_device_info_when_gpu_used_or_cpu_expected():
+    assert resolved_device_log_level("auto", "cuda") == logging.INFO
+    assert resolved_device_log_level("cuda", "cuda") == logging.INFO
+    assert resolved_device_log_level("cpu", "cpu") == logging.INFO

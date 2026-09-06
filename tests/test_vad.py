@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import queue
+import threading
+import time
 from datetime import datetime, timedelta
 
+from mictranscribe import vad
 from mictranscribe.vad import UtteranceAssembler
 
 FRAME_BYTES = 640  # 320 int16 samples, matches default 16kHz/20ms frame
@@ -85,3 +88,46 @@ def test_preroll_frames_are_included_in_emitted_utterance():
     assert utterance.audio.tobytes() == expected_bytes
     assert utterance.start == ts[8]
     assert utterance.end == ts[13]
+
+
+def test_enqueue_utterance_succeeds_immediately_with_room(caplog):
+    assembler = make_assembler(utterance_queue=queue.Queue(maxsize=1))
+    utterance = object()
+
+    assembler._enqueue_utterance(utterance)
+
+    assert assembler.utterance_queue.get_nowait() is utterance
+    assert "Utterance queue full" not in caplog.text
+
+
+def test_enqueue_utterance_warns_and_retries_until_space_frees(monkeypatch, caplog):
+    monkeypatch.setattr(vad, "UTTERANCE_QUEUE_WARN_INTERVAL_S", 0.05)
+    uq: "queue.Queue" = queue.Queue(maxsize=1)
+    uq.put_nowait("already queued")  # start full
+    assembler = make_assembler(utterance_queue=uq)
+    utterance = object()
+
+    def drain_after_delay():
+        time.sleep(0.15)  # let a couple of warning retries happen first
+        uq.get_nowait()
+
+    threading.Thread(target=drain_after_delay).start()
+
+    with caplog.at_level("WARNING"):
+        assembler._enqueue_utterance(utterance)  # must not hang forever
+
+    assert uq.get_nowait() is utterance
+    assert "Utterance queue full" in caplog.text
+
+
+def test_enqueue_utterance_stops_retrying_once_stop_is_called(monkeypatch):
+    monkeypatch.setattr(vad, "UTTERANCE_QUEUE_WARN_INTERVAL_S", 0.05)
+    uq: "queue.Queue" = queue.Queue(maxsize=1)
+    uq.put_nowait("already queued")  # stays full for the whole test
+    assembler = make_assembler(utterance_queue=uq)
+
+    threading.Timer(0.1, assembler.stop).start()
+
+    started = time.monotonic()
+    assembler._enqueue_utterance(object())  # must return once stop() fires, not hang
+    assert time.monotonic() - started < 1.0
